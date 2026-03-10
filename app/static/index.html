@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Arena MVP</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; }
+      .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-top: 12px; }
+      button { padding: 8px 12px; cursor: pointer; }
+      input, select { padding: 8px; }
+      #prompt { font-weight: bold; }
+      .score { font-size: 18px; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <h1>AI Arena MVP</h1>
+    <p>사람 vs AI 듀얼 모드 데모</p>
+
+    <div class="card">
+      <h3>1) 경기 설정</h3>
+      <div class="row">
+        <label>AI 모델
+          <select id="aiModel"></select>
+        </label>
+        <label>라운드 수
+          <select id="roundCount"><option>3</option><option selected>5</option></select>
+        </label>
+        <label>난이도
+          <select id="difficulty"><option>easy</option><option selected>normal</option><option>hard</option></select>
+        </label>
+        <button id="startBtn">경기 시작</button>
+      </div>
+    </div>
+
+    <div class="card hidden" id="playSection">
+      <h3>2) 경기 진행</h3>
+      <p id="roundLabel"></p>
+      <p id="prompt"></p>
+      <div class="row">
+        <input id="answerInput" placeholder="답변 입력" />
+        <button id="submitBtn">제출</button>
+      </div>
+      <p id="roundResult"></p>
+    </div>
+
+    <div class="card">
+      <h3>스코어</h3>
+      <p class="score" id="score">Human 0 : AI 0</p>
+    </div>
+
+    <div class="card hidden" id="reportSection">
+      <h3>3) 결과 리포트</h3>
+      <pre id="report"></pre>
+    </div>
+
+    <script>
+      const api = '/api/v1';
+      let userId = null;
+      let matchId = null;
+      let currentRound = 1;
+      let totalRounds = 5;
+      let startAt = 0;
+
+      const aiSelect = document.getElementById('aiModel');
+      const startBtn = document.getElementById('startBtn');
+      const playSection = document.getElementById('playSection');
+      const reportSection = document.getElementById('reportSection');
+      const roundLabel = document.getElementById('roundLabel');
+      const promptEl = document.getElementById('prompt');
+      const answerInput = document.getElementById('answerInput');
+      const submitBtn = document.getElementById('submitBtn');
+      const roundResult = document.getElementById('roundResult');
+      const scoreEl = document.getElementById('score');
+      const reportEl = document.getElementById('report');
+
+      async function boot() {
+        const auth = await fetch(`${api}/auth/guest`, { method: 'POST' }).then(r => r.json());
+        userId = auth.user_id;
+
+        const models = await fetch(`${api}/ai-models`).then(r => r.json());
+        models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.code;
+          opt.textContent = `${m.display_name} (${m.code})`;
+          aiSelect.appendChild(opt);
+        });
+      }
+
+      async function loadRound() {
+        const r = await fetch(`${api}/matches/${matchId}/rounds/${currentRound}`).then(x => x.json());
+        roundLabel.textContent = `Round ${currentRound}/${totalRounds} - ${r.game_type_code}`;
+        promptEl.textContent = r.prompt;
+        answerInput.value = '';
+        answerInput.focus();
+        startAt = Date.now();
+      }
+
+      async function updateScore() {
+        const m = await fetch(`${api}/matches/${matchId}`).then(r => r.json());
+        scoreEl.textContent = `Human ${m.human_total_score} : AI ${m.ai_total_score}`;
+      }
+
+      async function finishMatch() {
+        await fetch(`${api}/matches/${matchId}/finish`, { method: 'POST' });
+        const report = await fetch(`${api}/matches/${matchId}/report`).then(r => r.json());
+        reportSection.classList.remove('hidden');
+        reportEl.textContent = JSON.stringify(report, null, 2);
+      }
+
+      startBtn.onclick = async () => {
+        totalRounds = Number(document.getElementById('roundCount').value);
+        const difficulty = document.getElementById('difficulty').value;
+        const payload = {
+          user_id: userId,
+          ai_model_code: aiSelect.value,
+          mode: 'duel',
+          round_count: totalRounds,
+          difficulty,
+          set_code: 'quick_mix_5'
+        };
+        const created = await fetch(`${api}/matches`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).then(r => r.json());
+
+        matchId = created.match_id;
+        currentRound = 1;
+        await fetch(`${api}/matches/${matchId}/start`, { method: 'POST' });
+        playSection.classList.remove('hidden');
+        reportSection.classList.add('hidden');
+        roundResult.textContent = '';
+        await updateScore();
+        await loadRound();
+      };
+
+      submitBtn.onclick = async () => {
+        const latency = Date.now() - startAt;
+        const payload = {
+          answer: { final_answer: answerInput.value },
+          latency_ms: latency
+        };
+        const result = await fetch(`${api}/matches/${matchId}/rounds/${currentRound}/submit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }).then(r => r.json());
+
+        const rr = result.round_result;
+        roundResult.textContent = `라운드 결과: Human ${rr.human_score} / AI ${rr.ai_score} (${rr.winner})`;
+        await updateScore();
+
+        if (currentRound < totalRounds) {
+          currentRound += 1;
+          await loadRound();
+        } else {
+          await finishMatch();
+        }
+      };
+
+      boot();
+    </script>
+  </body>
+</html>
